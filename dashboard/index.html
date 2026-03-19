@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Worker Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-hover: #222632;
+      --border: #2a2e3b;
+      --text: #e1e4eb;
+      --text-muted: #8b8fa3;
+      --accent: #6c7ee1;
+      --accent-glow: rgba(108, 126, 225, 0.15);
+
+      --pending: #f59e0b;
+      --pending-bg: rgba(245, 158, 11, 0.12);
+      --in-progress: #6c7ee1;
+      --in-progress-bg: rgba(108, 126, 225, 0.12);
+      --done: #22c55e;
+      --done-bg: rgba(34, 197, 94, 0.12);
+      --failed: #ef4444;
+      --failed-bg: rgba(239, 68, 68, 0.12);
+      --not-ready: #8b8fa3;
+      --not-ready-bg: rgba(139, 143, 163, 0.12);
+      --intervention: #f97316;
+      --intervention-bg: rgba(249, 115, 22, 0.12);
+      --decomposed: #06b6d4;
+      --decomposed-bg: rgba(6, 182, 212, 0.12);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 28px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    header h1 span { color: var(--text-muted); font-weight: 400; }
+
+    .header-meta {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--done);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* Stats cards */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+
+    .stat-card .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .stat-card .value {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.04em;
+    }
+
+    .stat-card.highlight {
+      border-color: var(--accent);
+      background: var(--accent-glow);
+    }
+
+    /* Tickets */
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .ticket {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 12px;
+      overflow: hidden;
+      transition: border-color 0.15s;
+    }
+
+    .ticket:hover { border-color: var(--accent); }
+
+    .ticket-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .ticket-header:hover { background: var(--surface-hover); }
+
+    .ticket-key {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent);
+      white-space: nowrap;
+    }
+
+    .ticket-summary {
+      font-size: 13px;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ticket-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .badge-pending { background: var(--pending-bg); color: var(--pending); }
+    .badge-not_ready { background: var(--not-ready-bg); color: var(--not-ready); }
+    .badge-decomposed { background: var(--decomposed-bg); color: var(--decomposed); }
+    .badge-needs_intervention { background: var(--intervention-bg); color: var(--intervention); }
+    .badge-done { background: var(--done-bg); color: var(--done); }
+    .badge-in_progress { background: var(--in-progress-bg); color: var(--in-progress); }
+    .badge-failed { background: var(--failed-bg); color: var(--failed); }
+
+    .progress-bar {
+      width: 80px;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--done);
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+
+    .iterations { font-variant-numeric: tabular-nums; }
+
+    .chevron {
+      color: var(--text-muted);
+      transition: transform 0.15s;
+      font-size: 14px;
+    }
+
+    .ticket.open .chevron { transform: rotate(90deg); }
+
+    /* Subtasks panel */
+    .subtasks-panel {
+      display: none;
+      border-top: 1px solid var(--border);
+      padding: 4px 0;
+    }
+
+    .ticket.open .subtasks-panel { display: block; }
+
+    .subtask {
+      padding: 14px 20px 14px 42px;
+      font-size: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .subtask:last-child { border-bottom: none; }
+
+    .subtask-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .subtask-order {
+      color: var(--text-muted);
+      font-family: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', monospace;
+      font-variant-numeric: tabular-nums;
+      min-width: 20px;
+    }
+
+    .subtask-desc {
+      flex: 1;
+      line-height: 1.6;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+    }
+
+    .subtask-desc h2 {
+      font-size: 15px;
+      font-weight: 700;
+      margin: 16px 0 8px;
+      color: var(--text);
+      letter-spacing: -0.01em;
+    }
+
+    .subtask-desc h2:first-child { margin-top: 0; }
+
+    .subtask-desc h3 {
+      font-size: 13px;
+      font-weight: 600;
+      margin: 14px 0 6px;
+      color: var(--accent);
+    }
+
+    .subtask-desc p {
+      margin: 6px 0;
+    }
+
+    .subtask-desc ul, .subtask-desc ol {
+      margin: 6px 0;
+      padding-left: 20px;
+    }
+
+    .subtask-desc li {
+      margin: 3px 0;
+    }
+
+    .subtask-desc code {
+      font-family: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: rgba(108, 126, 225, 0.1);
+      color: #c4cbf5;
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    .subtask-desc pre {
+      margin: 8px 0;
+      padding: 12px 14px;
+      background: #13151d;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+
+    .subtask-desc pre code {
+      background: none;
+      padding: 0;
+      color: #b8c0e0;
+      font-size: 11.5px;
+      line-height: 1.55;
+    }
+
+    .subtask-desc strong {
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .subtask-desc em {
+      color: var(--text-muted);
+    }
+
+    .subtask-desc hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 12px 0;
+    }
+
+    .subtask-desc blockquote {
+      border-left: 3px solid var(--accent);
+      padding-left: 12px;
+      margin: 8px 0;
+      color: var(--text-muted);
+    }
+
+    .subtask-models {
+      font-size: 10px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .empty-state .big { font-size: 32px; margin-bottom: 12px; }
+
+    /* Error banner */
+    .error-banner {
+      background: var(--failed-bg);
+      border: 1px solid var(--failed);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      font-size: 12px;
+      color: var(--failed);
+      display: none;
+    }
+
+    .error-banner.visible { display: block; }
+
+    /* Responsive */
+    @media (max-width: 640px) {
+      body { padding: 16px; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .ticket-summary { display: none; }
+      .progress-bar { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>worker <span>dashboard</span></h1>
+  <div class="header-meta">
+    <div class="live-dot"></div>
+    <span id="last-updated">loading…</span>
+    <span>auto-refresh 10s</span>
+  </div>
+</header>
+
+<div class="error-banner" id="error-banner"></div>
+
+<div class="stats" id="stats"></div>
+
+<div class="section-title">Tickets</div>
+<div id="tickets"></div>
+
+<script>
+  const API = "/api/dashboard";
+  const REFRESH_MS = 10_000;
+  let openTickets = new Set();
+
+  async function fetchDashboard() {
+    try {
+      const res = await fetch(API);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      render(data);
+      hideError();
+    } catch (e) {
+      showError(e.message);
+    }
+  }
+
+  function showError(msg) {
+    const el = document.getElementById("error-banner");
+    el.textContent = `Error: ${msg}`;
+    el.classList.add("visible");
+  }
+
+  function hideError() {
+    document.getElementById("error-banner").classList.remove("visible");
+  }
+
+  function render(data) {
+    renderStats(data.stats);
+    renderTickets(data.tickets, data.subtasks);
+    document.getElementById("last-updated").textContent =
+      `updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  function renderStats(stats) {
+    const s = stats.tickets;
+    const sub = stats.subtasks;
+    const cards = [
+      { label: "Tickets", value: s.total, highlight: false },
+      { label: "Pending", value: s.pending, highlight: false },
+      { label: "Decomposed", value: s.decomposed, highlight: s.decomposed > 0 },
+      { label: "Done", value: s.done, highlight: false },
+      { label: "Needs Help", value: s.needs_intervention, highlight: s.needs_intervention > 0 },
+      { label: "Subtasks", value: sub.total, highlight: false },
+      { label: "In Progress", value: sub.in_progress, highlight: sub.in_progress > 0 },
+      { label: "Sub Done", value: sub.done, highlight: false },
+    ];
+
+    document.getElementById("stats").innerHTML = cards
+      .map(
+        (c) =>
+          `<div class="stat-card${c.highlight ? " highlight" : ""}">
+            <div class="label">${c.label}</div>
+            <div class="value">${c.value}</div>
+          </div>`
+      )
+      .join("");
+  }
+
+  function renderTickets(tickets, subtasks) {
+    const container = document.getElementById("tickets");
+
+    if (!tickets.length) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="big">—</div>
+          No tickets yet. Scheduler hasn't run or the DB is empty.
+        </div>`;
+      return;
+    }
+
+    const subtasksByTicket = {};
+    for (const s of subtasks) {
+      if (!subtasksByTicket[s.ticket_id]) subtasksByTicket[s.ticket_id] = [];
+      subtasksByTicket[s.ticket_id].push(s);
+    }
+
+    container.innerHTML = tickets
+      .map((t) => {
+        const subs = subtasksByTicket[t.jira_key] || [];
+        const doneCount = subs.filter((s) => s.status === "done").length;
+        const pct = subs.length ? Math.round((doneCount / subs.length) * 100) : 0;
+        const isOpen = openTickets.has(t.jira_key);
+
+        return `
+        <div class="ticket${isOpen ? " open" : ""}" data-key="${t.jira_key}">
+          <div class="ticket-header" onclick="toggleTicket('${t.jira_key}')">
+            <span class="chevron">▸</span>
+            <span class="ticket-key">${esc(t.jira_key)}</span>
+            <span class="ticket-summary">${esc(t.summary)}</span>
+            <div class="ticket-meta">
+              <span class="badge badge-${t.status}">${formatStatus(t.status)}</span>
+              ${subs.length ? `
+                <div class="progress-bar">
+                  <div class="progress-bar-fill" style="width:${pct}%"></div>
+                </div>
+                <span>${doneCount}/${subs.length}</span>
+              ` : ""}
+              <span class="iterations" title="Total LLM iterations">⟳ ${t.total_iterations}</span>
+            </div>
+          </div>
+          <div class="subtasks-panel">
+            ${subs.length
+              ? subs
+                  .map(
+                    (s) => `
+                <div class="subtask">
+                  <div class="subtask-header">
+                    <span class="subtask-order">${s.sort_order}.</span>
+                    <span class="badge badge-${s.status}" style="flex-shrink:0">${formatStatus(s.status)}</span>
+                    <span class="subtask-models" title="spec: ${esc(s.spec_model)} / quality: ${esc(s.quality_model)}">
+                      ${shortModel(s.spec_model)}
+                    </span>
+                  </div>
+                  <div class="subtask-desc">${renderMarkdown(s.description)}</div>
+                </div>`
+                  )
+                  .join("")
+              : '<div class="subtask"><span class="subtask-desc" style="color:var(--text-muted)">No subtasks yet</span></div>'
+            }
+          </div>
+        </div>`;
+      })
+      .join("");
+  }
+
+  function toggleTicket(key) {
+    if (openTickets.has(key)) openTickets.delete(key);
+    else openTickets.add(key);
+    const el = document.querySelector(`.ticket[data-key="${key}"]`);
+    if (el) el.classList.toggle("open");
+  }
+
+  function formatStatus(s) {
+    return s.replace(/_/g, " ");
+  }
+
+  function shortModel(m) {
+    return m.replace("claude-", "").replace("-20251001", "");
+  }
+
+  function esc(s) {
+    if (!s) return "";
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function renderMarkdown(src) {
+    if (!src) return "";
+    let html = "";
+    const lines = src.split("\n");
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // Fenced code block
+      const fenceMatch = line.match(/^```(\w*)/);
+      if (fenceMatch) {
+        const lang = fenceMatch[1];
+        const codeLines = [];
+        i++;
+        while (i < lines.length && !lines[i].startsWith("```")) {
+          codeLines.push(lines[i]);
+          i++;
+        }
+        i++; // skip closing ```
+        html += `<pre><code${lang ? ` data-lang="${esc(lang)}"` : ""}>${esc(codeLines.join("\n"))}</code></pre>`;
+        continue;
+      }
+
+      // Blank line
+      if (line.trim() === "") { i++; continue; }
+
+      // Headings
+      const h3 = line.match(/^### (.+)/);
+      if (h3) { html += `<h3>${inline(h3[1])}</h3>`; i++; continue; }
+      const h2 = line.match(/^## (.+)/);
+      if (h2) { html += `<h2>${inline(h2[1])}</h2>`; i++; continue; }
+
+      // HR
+      if (/^---+$/.test(line.trim())) { html += "<hr>"; i++; continue; }
+
+      // Blockquote
+      if (line.startsWith("> ")) {
+        const bqLines = [];
+        while (i < lines.length && lines[i].startsWith("> ")) {
+          bqLines.push(lines[i].slice(2));
+          i++;
+        }
+        html += `<blockquote>${bqLines.map(l => `<p>${inline(l)}</p>`).join("")}</blockquote>`;
+        continue;
+      }
+
+      // Unordered list
+      if (/^[-*] /.test(line)) {
+        html += "<ul>";
+        while (i < lines.length && /^[-*] /.test(lines[i])) {
+          html += `<li>${inline(lines[i].replace(/^[-*] /, ""))}</li>`;
+          i++;
+        }
+        html += "</ul>";
+        continue;
+      }
+
+      // Ordered list
+      if (/^\d+\.\s/.test(line)) {
+        html += "<ol>";
+        while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
+          html += `<li>${inline(lines[i].replace(/^\d+\.\s/, ""))}</li>`;
+          i++;
+        }
+        html += "</ol>";
+        continue;
+      }
+
+      // Paragraph
+      const paraLines = [];
+      while (i < lines.length && lines[i].trim() !== "" && !lines[i].match(/^```|^#{2,3} |^[-*] |^\d+\.\s|^---+$|^> /)) {
+        paraLines.push(lines[i]);
+        i++;
+      }
+      html += `<p>${inline(paraLines.join(" "))}</p>`;
+    }
+
+    return html;
+  }
+
+  function inline(text) {
+    // Escape HTML first
+    let s = esc(text);
+    // Inline code (backticks)
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Bold
+    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // Italic
+    s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    // Links
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color:var(--accent)">$1</a>');
+    return s;
+  }
+
+  // Boot
+  fetchDashboard();
+  setInterval(fetchDashboard, REFRESH_MS);
+</script>
+</body>
+</html>
