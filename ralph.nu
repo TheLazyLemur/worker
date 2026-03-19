@@ -135,7 +135,7 @@ def smart-commit [worktree_path: string, description: string] {
     print $"[ralph] committed: ($result.message)"
 }
 
-def build-implementer-prompt [description: string, context: record, tests_status: string, rules: string] {
+def build-implementer-prompt [description: string, context: record, tests_status: string, tests_output: string, rules: string] {
     let actions_json = ($context.actions | to json)
     let last_msgs = ($context.last_messages | to json)
 
@@ -151,8 +151,14 @@ Previous iteration context:
 Actions taken: ($actions_json)
 Last messages: ($last_msgs)
 Test status: ($tests_status)
+($tests_output)
 
-Continue implementing. When complete, set done=true."
+Continue implementing. When complete, set done=true.
+
+IMPORTANT: Before setting done=true you MUST run the relevant test suite yourself and verify all tests pass. Do NOT set done=true if any tests are failing — fix them first.
+- Changed .cs files → run `make test-dotnet`
+- Changed solver .py files → run `make test-solver-local`
+- Changed client .ts/.tsx files → run `make test-client`"
 }
 
 def work-subtask [subtask: record] {
@@ -160,6 +166,7 @@ def work-subtask [subtask: record] {
     let rules = (load-rules $subtask.worktree_path)
     mut iter = 0
     mut tests_status = "unknown"
+    mut tests_output = ""
 
     while $iter < $MAX_ITERATIONS_PER_PASS {
         # check lifetime cap
@@ -172,7 +179,7 @@ def work-subtask [subtask: record] {
         }
 
         let context = (load-context $subtask.id)
-        let prompt = (build-implementer-prompt $subtask.description $context $tests_status $rules)
+        let prompt = (build-implementer-prompt $subtask.description $context $tests_status $tests_output $rules)
 
         print $"[ralph] subtask ($subtask.id) iter ($iter) — invoking claude"
 
@@ -214,6 +221,14 @@ def work-subtask [subtask: record] {
         let test_result = (do { cd $subtask.worktree_path; make test-dotnet; make test-solver CONTAINER_ENGINE=podman } | complete)
         let tests_pass = ($test_result.exit_code == 0)
         $tests_status = (if $tests_pass { "pass" } else { "fail" })
+        $tests_output = (if $tests_pass { "" } else {
+            let combined = $"($test_result.stdout)\n($test_result.stderr)"
+            let lines = ($combined | lines)
+            let count = ($lines | length)
+            let truncated = if $count > 80 { $lines | last 80 | str join "\n" } else { $combined }
+            let fence = "```"
+            $"\nTest output \(last 80 lines\):\n($fence)\n($truncated)\n($fence)"
+        })
 
         print $"[ralph] subtask ($subtask.id) iter ($iter) — tests ($tests_status)"
 
