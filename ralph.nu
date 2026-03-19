@@ -155,10 +155,7 @@ Test status: ($tests_status)
 
 Continue implementing. When complete, set done=true.
 
-IMPORTANT: Before setting done=true you MUST run the relevant test suite yourself and verify all tests pass. Do NOT set done=true if any tests are failing — fix them first.
-- Changed .cs files → run `make test-dotnet`
-- Changed solver .py files → run `make test-solver-local`
-- Changed client .ts/.tsx files → run `make test-client`"
+IMPORTANT: Before setting done=true you MUST run the test suite yourself with `(test-command)` and verify all tests pass. Do NOT set done=true if any tests are failing — fix them first."
 }
 
 def work-subtask [subtask: record] {
@@ -218,7 +215,8 @@ def work-subtask [subtask: record] {
         print $"[ralph] subtask ($subtask.id) iter ($iter) — done=($structured.done) reason=($structured.reason)"
 
         # run tests
-        let test_result = (do { cd $subtask.worktree_path; make test-dotnet; make test-solver CONTAINER_ENGINE=podman } | complete)
+        let cmd = (test-command)
+        let test_result = (do { cd $subtask.worktree_path; ^sh -c $cmd } | complete)
         let tests_pass = ($test_result.exit_code == 0)
         $tests_status = (if $tests_pass { "pass" } else { "fail" })
         $tests_output = (if $tests_pass { "" } else {

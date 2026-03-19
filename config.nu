@@ -38,3 +38,9 @@ const NOT_READY_COOLDOWN = 5min
 # Ralph loop
 const MAX_ITERATIONS_PER_PASS = 20
 const LIFETIME_CAP = 160
+
+# Test command — run from the worktree root after each iteration
+# Override via TEST_COMMAND env var
+def test-command [] {
+    $env | get -o TEST_COMMAND | default "make test"
+}
