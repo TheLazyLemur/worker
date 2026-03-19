@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS tickets (
     jira_key TEXT PRIMARY KEY,
     summary TEXT NOT NULL,
     description TEXT,
+    description_hash TEXT,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'not_ready', 'decomposed', 'needs_intervention', 'done')),  -- pending | not_ready | decomposed | needs_intervention | done
     worktree_path TEXT,
     base_branch TEXT,

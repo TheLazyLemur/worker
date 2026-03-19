@@ -37,19 +37,20 @@ def upsert-tickets [tickets: list] {
             let esc_key = (escape-sql $ticket.key)
             let esc_summary = (escape-sql $ticket.summary)
             let esc_desc = (escape-sql $description)
-            db-query $"INSERT INTO tickets \(jira_key, summary, description\) VALUES \('($esc_key)', '($esc_summary)', '($esc_desc)'\)"
+            let desc_hash = ($description | hash md5)
+            db-query $"INSERT INTO tickets \(jira_key, summary, description, description_hash\) VALUES \('($esc_key)', '($esc_summary)', '($esc_desc)', '($desc_hash)'\)"
             print $"[scheduler] inserted ticket ($ticket.key)"
         }
     }
 }
 
 def get-pending-tickets [] {
-    db-query "SELECT jira_key, summary, description FROM tickets WHERE status = 'pending'"
+    db-query "SELECT jira_key, summary, description, status FROM tickets WHERE status = 'pending'"
 }
 
 def get-stale-not-ready-tickets [] {
     let cutoff = ((date now) - $NOT_READY_COOLDOWN | format date "%Y-%m-%dT%H:%M:%S")
-    db-query $"SELECT jira_key, summary, description FROM tickets WHERE status = 'not_ready' AND updated_at < '($cutoff)'"
+    db-query $"SELECT jira_key, summary, description, status FROM tickets WHERE status = 'not_ready' AND updated_at < '($cutoff)'"
 }
 
 def readiness-check [description: string]: nothing -> record {
@@ -137,8 +138,17 @@ def process-candidate [ticket: record] {
     print $"[scheduler] checking readiness: ($ticket.jira_key)"
     # re-fetch description from Jira in case it was updated since last check
     let description = (fetch-ticket-description $ticket.jira_key)
+    let new_hash = ($description | hash md5)
+
+    # skip readiness check if description unchanged since last not_ready verdict
+    let stored = (db-query $"SELECT description_hash FROM tickets WHERE jira_key = '(escape-sql $ticket.jira_key)'" | get -o 0)
+    if $ticket.status == "not_ready" and ($stored | is-not-empty) and ($stored.description_hash? == $new_hash) {
+        print $"[scheduler] ($ticket.jira_key) description unchanged, skipping"
+        return
+    }
+
     let esc_desc = (escape-sql $description)
-    db-query $"UPDATE tickets SET description = '($esc_desc)', updated_at = '(now-iso)' WHERE jira_key = '(escape-sql $ticket.jira_key)'"
+    db-query $"UPDATE tickets SET description = '($esc_desc)', description_hash = '($new_hash)', updated_at = '(now-iso)' WHERE jira_key = '(escape-sql $ticket.jira_key)'"
     let check = (readiness-check $description)
 
     if $check.ready {

@@ -1,6 +1,6 @@
 const CONFIG_DIR = (path self | path dirname)
 
-def load-dotenv [] {
+def --env load-dotenv [] {
     let env_file = ($CONFIG_DIR | path join ".env")
     if not ($env_file | path exists) { return }
     let vars = (open $env_file
@@ -9,7 +9,7 @@ def load-dotenv [] {
         | each { |l|
             let idx = ($l | str index-of "=")
             if $idx >= 0 {
-                { ($l | str substring ..($idx) | str trim): ($l | str substring ($idx + 1).. | str trim) }
+                { ($l | str substring ..<($idx) | str trim): ($l | str substring ($idx + 1).. | str trim) }
             }
         }
         | compact
