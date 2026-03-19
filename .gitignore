@@ -1,0 +1,6 @@
+.env
+worker.db
+worker.db-wal
+worker.db-shm
+*.jsonl
+/tmp/
