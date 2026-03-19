@@ -45,12 +45,12 @@ def upsert-tickets [tickets: list] {
 }
 
 def get-pending-tickets [] {
-    db-query "SELECT jira_key, summary, description, status FROM tickets WHERE status = 'pending'"
+    db-query "SELECT jira_key, summary, description, status, manual FROM tickets WHERE status = 'pending'"
 }
 
 def get-stale-not-ready-tickets [] {
     let cutoff = ((date now) - $NOT_READY_COOLDOWN | format date "%Y-%m-%dT%H:%M:%S")
-    db-query $"SELECT jira_key, summary, description, status FROM tickets WHERE status = 'not_ready' AND updated_at < '($cutoff)'"
+    db-query $"SELECT jira_key, summary, description, status, manual FROM tickets WHERE status = 'not_ready' AND updated_at < '($cutoff)'"
 }
 
 def readiness-check [description: string]: nothing -> record {
@@ -136,8 +136,14 @@ def mark-not-ready [key: string, reason: string] {
 
 def process-candidate [ticket: record] {
     print $"[scheduler] checking readiness: ($ticket.jira_key)"
-    # re-fetch description from Jira in case it was updated since last check
-    let description = (fetch-ticket-description $ticket.jira_key)
+
+    let description = if ($ticket.manual == 1) {
+        # manual tickets already have their description in the DB
+        $ticket.description
+    } else {
+        # re-fetch description from Jira in case it was updated since last check
+        fetch-ticket-description $ticket.jira_key
+    }
     let new_hash = ($description | hash md5)
 
     # skip readiness check if description unchanged since last not_ready verdict
