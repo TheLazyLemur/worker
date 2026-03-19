@@ -19,7 +19,7 @@ def init-db [] {
 }
 
 def fetch-jira-tickets [] {
-    let jql = $'project = ($env.JIRA_PROJECT) AND sprint in openSprints() AND assignee = "($env.JIRA_ASSIGNEE)" AND status != Done'
+    let jql = "project = " + $env.JIRA_PROJECT + ' AND sprint in openSprints() AND assignee = "' + $env.JIRA_ASSIGNEE + '" AND status != Done'
     ^jira issue list --plain --no-headers --columns KEY,SUMMARY --delimiter "|" -q $jql
     | lines
     | each { |l| $l | split column "|" key summary | get 0 }
