@@ -24,6 +24,7 @@ cp .env.example .env
 |---|---|
 | `JIRA_ASSIGNEE` | Your Jira email address |
 | `JIRA_PROJECT` | Jira project key (e.g. `APS`) |
+| `GIT_BASE_BRANCH` | Branch to create worktrees from (e.g. `develop`, `main`) |
 
 The `.env` file is loaded automatically at startup. You can also export the variables directly.
 

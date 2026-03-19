@@ -64,13 +64,13 @@ def readiness-check [description: string]: nothing -> record {
 }
 
 def create-worktree [key: string, summary: string]: nothing -> record {
-    let base_branch = "develop"
+    let base_branch = $env.GIT_BASE_BRANCH
     let slug = ($summary | str downcase | str replace --all --regex '[^a-z0-9]+' '-' | str substring 0..40)
     let branch = $"feature/($key | str downcase)-($slug)"
     let worktree_path = ($REPO_ROOT | path join ".claude" "worktrees" $"($key)-($slug)")
 
-    ^git -C $REPO_ROOT fetch origin develop
-    ^git -C $REPO_ROOT worktree add $worktree_path -b $branch $"origin/develop"
+    ^git -C $REPO_ROOT fetch origin $base_branch
+    ^git -C $REPO_ROOT worktree add $worktree_path -b $branch $"origin/($base_branch)"
     print $"[scheduler] created worktree ($worktree_path) on branch ($branch)"
 
     { worktree_path: $worktree_path, base_branch: $base_branch }
