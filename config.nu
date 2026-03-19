@@ -19,12 +19,16 @@ def --env load-dotenv [] {
 
 def validate-config [] {
     mut missing = []
-    if ($env | get -o JIRA_ASSIGNEE | default "" | is-empty) { $missing = ($missing | append "JIRA_ASSIGNEE") }
-    if ($env | get -o JIRA_PROJECT | default "" | is-empty) { $missing = ($missing | append "JIRA_PROJECT") }
     if ($env | get -o GIT_BASE_BRANCH | default "" | is-empty) { $missing = ($missing | append "GIT_BASE_BRANCH") }
     if ($missing | is-not-empty) {
         error make { msg: $"missing required env vars: ($missing | str join ', '). Set them in .env or export them." }
     }
+}
+
+def jira-configured [] {
+    let project = ($env | get -o JIRA_PROJECT | default "")
+    let assignee = ($env | get -o JIRA_ASSIGNEE | default "")
+    ($project | is-not-empty) and ($assignee | is-not-empty)
 }
 
 # Polling

@@ -190,14 +190,14 @@ def main [] {
     loop {
         print $"[scheduler] polling at (now-iso)"
 
-        # 1. fetch tickets from Jira
-        let tickets = (fetch-jira-tickets)
-        print $"[scheduler] found ($tickets | length) sprint tickets"
+        # 1. fetch tickets from Jira (if configured)
+        if (jira-configured) {
+            let tickets = (fetch-jira-tickets)
+            print $"[scheduler] found ($tickets | length) sprint tickets"
+            upsert-tickets $tickets
+        }
 
-        # 2. upsert into DB
-        upsert-tickets $tickets
-
-        # 3. get candidates: pending + stale not_ready
+        # 2. get candidates: pending + stale not_ready
         let pending = (get-pending-tickets)
         let stale = (get-stale-not-ready-tickets)
         let candidates = ($pending | append $stale)
