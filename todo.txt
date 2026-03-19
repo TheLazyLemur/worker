@@ -1,2 +1,3 @@
 - Review round cap: after N review rounds (e.g. 3), mark ticket needs_intervention instead of inserting more followups. Prevents spec/quality reviewers ping-ponging on the same issues
+- Smart test selection: ralph's post-hoc test run should only run suites relevant to changed files (.cs → test-dotnet, .py → test-solver, .ts/.tsx → test-client) instead of always running everything
 - Rewrite in TypeScript: provider architecture (AnthropicProvider via Claude Agent SDK, OpenCodeProvider via @opencode-ai/sdk), proper signal handling, parameterised SQL, failover between subscriptions
