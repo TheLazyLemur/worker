@@ -11,6 +11,34 @@ def db-query [sql: string] { open $DB | query db $sql }
 def now-iso [] { date now | format date "%Y-%m-%dT%H:%M:%S" }
 def escape-sql [s: string] { $s | str replace --all "'" "''" }
 
+def codex-model [requested?: string] {
+    let model = ($requested | default "")
+    if ($model | str starts-with "gpt-") { $model } else { "gpt-5.4" }
+}
+
+def invoke-codex-json [prompt: string, schema: string, cwd?: string, model?: string] {
+    let tmp_dir = (^mktemp -d | str trim)
+    let schema_path = ($tmp_dir | path join "schema.json")
+    let out_path = ($tmp_dir | path join "out.json")
+    let chosen_model = (codex-model $model)
+
+    $schema | save -f $schema_path
+
+    let run = if (($cwd | default "") | is-empty) {
+        do { $prompt | ^codex exec --full-auto --skip-git-repo-check --ephemeral -m $chosen_model --output-schema $schema_path --output-last-message $out_path - } | complete
+    } else {
+        do { cd $cwd; $prompt | ^codex exec --full-auto --skip-git-repo-check --ephemeral -m $chosen_model --output-schema $schema_path --output-last-message $out_path - } | complete
+    }
+
+    if $run.exit_code != 0 {
+        error make { msg: $"codex exec failed: ($run.stderr | str trim)" }
+    }
+
+    let result = (open $out_path)
+    ^rm -rf $tmp_dir
+    $result
+}
+
 def init-db [] {
     let init_sql = ($SCRIPT_DIR | path join "init.sql")
     ^sqlite3 $DB $".read ($init_sql)"
@@ -54,14 +82,11 @@ def get-stale-not-ready-tickets [] {
 }
 
 def readiness-check [description: string]: nothing -> record {
-    let schema = '{"type":"object","properties":{"ready":{"type":"boolean"},"reason":{"type":"string"}},"required":["ready","reason"]}'
+    let schema = '{"type":"object","properties":{"ready":{"type":"boolean"},"reason":{"type":"string"}},"required":["ready","reason"],"additionalProperties":false}'
     let prompt_template = (open ([$PROMPTS "readiness.md"] | path join))
     let prompt = ($prompt_template | str replace "{{TICKET_CONTENT}}" $description)
 
-    ^claude --print --output-format json --json-schema $schema --model claude-haiku-4-5-20251001 --no-session-persistence $prompt
-    | from json
-    | where type == "result"
-    | get 0.structured_output
+    invoke-codex-json $prompt $schema
 }
 
 def create-worktree [key: string, summary: string]: nothing -> record {
@@ -97,17 +122,21 @@ def load-rules [worktree_path: string] {
 }
 
 def decompose-ticket [description: string, worktree_path: string]: nothing -> list {
-    let schema = '{"type":"object","properties":{"subtasks":{"type":"array","items":{"type":"object","properties":{"description":{"type":"string"},"sort_order":{"type":"integer"},"spec_model":{"type":"string"},"quality_model":{"type":"string"}},"required":["description","sort_order","spec_model","quality_model"]}}},"required":["subtasks"]}'
+    let schema = '{"type":"object","properties":{"subtasks":{"type":"array","items":{"type":"object","properties":{"description":{"type":"string"},"sort_order":{"type":"integer"},"spec_model":{"type":"string"},"quality_model":{"type":"string"}},"required":["description","sort_order","spec_model","quality_model"],"additionalProperties":false}}},"required":["subtasks"],"additionalProperties":false}'
     let rules = (load-rules $worktree_path)
     let prompt_template = (open ([$PROMPTS "decompose.md"] | path join))
     let prompt = $"# Project Rules\n\n($rules)\n\n# Task\n\n" + ($prompt_template | str replace "{{TICKET_CONTENT}}" $description)
 
-    let result = do { cd $worktree_path; ^claude --print --output-format json --json-schema $schema --model claude-opus-4-6 --allowed-tools "Read Glob Grep" --no-session-persistence $prompt }
-    | from json
-    | where type == "result"
-    | get 0.structured_output
+    let result = (invoke-codex-json $prompt $schema $worktree_path)
 
-    $result.subtasks
+    $result.subtasks | each { |subtask|
+        {
+            description: $subtask.description,
+            sort_order: $subtask.sort_order,
+            spec_model: (codex-model $subtask.spec_model),
+            quality_model: (codex-model $subtask.quality_model)
+        }
+    }
 }
 
 def insert-subtasks [ticket_key: string, subtasks: list] {
@@ -138,15 +167,12 @@ def process-candidate [ticket: record] {
     print $"[scheduler] checking readiness: ($ticket.jira_key)"
 
     let description = if ($ticket.manual == 1) {
-        # manual tickets already have their description in the DB
         $ticket.description
     } else {
-        # re-fetch description from Jira in case it was updated since last check
         fetch-ticket-description $ticket.jira_key
     }
     let new_hash = ($description | hash md5)
 
-    # skip readiness check if description unchanged since last not_ready verdict
     let stored = (db-query $"SELECT description_hash FROM tickets WHERE jira_key = '(escape-sql $ticket.jira_key)'" | get -o 0)
     if $ticket.status == "not_ready" and ($stored | is-not-empty) and ($stored.description_hash? == $new_hash) {
         print $"[scheduler] ($ticket.jira_key) description unchanged, skipping"
@@ -179,8 +205,6 @@ def process-candidate [ticket: record] {
     }
 }
 
-# --- main loop ---
-
 def main [] {
     load-dotenv
     validate-config
@@ -190,21 +214,18 @@ def main [] {
     loop {
         print $"[scheduler] polling at (now-iso)"
 
-        # 1. fetch tickets from Jira (if configured)
         if (jira-configured) {
             let tickets = (fetch-jira-tickets)
             print $"[scheduler] found ($tickets | length) sprint tickets"
             upsert-tickets $tickets
         }
 
-        # 2. get candidates: pending + stale not_ready
         let pending = (get-pending-tickets)
         let stale = (get-stale-not-ready-tickets)
         let candidates = ($pending | append $stale)
 
         print $"[scheduler] ($candidates | length) candidates \(($pending | length) pending, ($stale | length) stale not_ready\)"
 
-        # 4. process each candidate
         for candidate in $candidates {
             try {
                 process-candidate $candidate

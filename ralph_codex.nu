@@ -11,6 +11,61 @@ def db-query [sql: string] { open $DB | query db $sql }
 def now-iso [] { date now | format date "%Y-%m-%dT%H:%M:%S" }
 def escape-sql [s: string] { $s | str replace --all "'" "''" }
 
+def codex-model [requested?: string] {
+    let model = ($requested | default "")
+    if ($model | str starts-with "gpt-") { $model } else { "gpt-5.4" }
+}
+
+def invoke-codex-json [prompt: string, schema: string, cwd?: string, model?: string] {
+    let tmp_dir = (^mktemp -d | str trim)
+    let schema_path = ($tmp_dir | path join "schema.json")
+    let out_path = ($tmp_dir | path join "out.json")
+    let chosen_model = (codex-model $model)
+
+    $schema | save -f $schema_path
+
+    let run = if (($cwd | default "") | is-empty) {
+        do { $prompt | ^codex exec --full-auto --skip-git-repo-check --ephemeral -m $chosen_model --output-schema $schema_path --output-last-message $out_path - } | complete
+    } else {
+        do { cd $cwd; $prompt | ^codex exec --full-auto --skip-git-repo-check --ephemeral -m $chosen_model --output-schema $schema_path --output-last-message $out_path - } | complete
+    }
+
+    if $run.exit_code != 0 {
+        error make { msg: $"codex exec failed: ($run.stderr | str trim)" }
+    }
+
+    let result = (open $out_path)
+    ^rm -rf $tmp_dir
+    $result
+}
+
+def invoke-codex-stream [prompt: string, schema: string, cwd: string, model?: string] {
+    let tmp_dir = (^mktemp -d | str trim)
+    let schema_path = ($tmp_dir | path join "schema.json")
+    let out_path = ($tmp_dir | path join "out.json")
+    let chosen_model = (codex-model $model)
+
+    $schema | save -f $schema_path
+
+    let run = (do { cd $cwd; $prompt | ^codex exec --full-auto --skip-git-repo-check --ephemeral -m $chosen_model --output-schema $schema_path --output-last-message $out_path --json - } | complete)
+
+    if $run.exit_code != 0 {
+        error make { msg: $"codex exec failed: ($run.stderr | str trim)" }
+    }
+
+    let structured = (open $out_path)
+    let raw_output = $run.stdout
+    ^rm -rf $tmp_dir
+
+    {
+        raw_output: $raw_output,
+        events: [
+            { type: "text", text: $structured.reason },
+            { type: "result", structured_output: $structured }
+        ]
+    }
+}
+
 def init-db [] {
     let init_sql = ($SCRIPT_DIR | path join "init.sql")
     ^sqlite3 $DB $".read ($init_sql)"
@@ -114,14 +169,11 @@ def smart-commit [worktree_path: string, description: string] {
         return
     }
 
-    let schema = '{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"}},"message":{"type":"string"}},"required":["files","message"]}'
+    let schema = '{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"}},"message":{"type":"string"}},"required":["files","message"],"additionalProperties":false}'
     let prompt_template = (open ([$PROMPTS "commit.md"] | path join))
     let prompt = ($prompt_template | str replace "{{SUBTASK_DESC}}" $description | str replace "{{GIT_STATUS}}" $git_status)
 
-    let result = (^claude --print --output-format json --json-schema $schema --model claude-haiku-4-5-20251001 --no-session-persistence $prompt
-    | from json
-    | where type == "result"
-    | get 0.structured_output)
+    let result = (invoke-codex-json $prompt $schema)
 
     if ($result.files | is-empty) {
         print "[ralph] no files selected for commit"
@@ -159,14 +211,13 @@ IMPORTANT: Before setting done=true you MUST run the test suite yourself with `(
 }
 
 def work-subtask [subtask: record] {
-    let schema = '{"type":"object","properties":{"done":{"type":"boolean"},"reason":{"type":"string"}},"required":["done","reason"]}'
+    let schema = '{"type":"object","properties":{"done":{"type":"boolean"},"reason":{"type":"string"}},"required":["done","reason"],"additionalProperties":false}'
     let rules = (load-rules $subtask.worktree_path)
     mut iter = 0
     mut tests_status = "unknown"
     mut tests_output = ""
 
     while $iter < $MAX_ITERATIONS_PER_PASS {
-        # check lifetime cap
         let total = (get-ticket-iterations $subtask.ticket_id)
         if $total >= $LIFETIME_CAP {
             print $"[ralph] lifetime cap reached for ($subtask.ticket_id)"
@@ -178,24 +229,18 @@ def work-subtask [subtask: record] {
         let context = (load-context $subtask.id)
         let prompt = (build-implementer-prompt $subtask.description $context $tests_status $tests_output $rules)
 
-        print $"[ralph] subtask ($subtask.id) iter ($iter) — invoking claude"
+        print $"[ralph] subtask ($subtask.id) iter ($iter) — invoking codex"
 
-        let raw_output = (do { cd $subtask.worktree_path; ^claude --print --output-format stream-json --json-schema $schema --permission-mode bypassPermissions --model claude-opus-4-6 --no-session-persistence $prompt })
+        let stream_result = (invoke-codex-stream $prompt $schema $subtask.worktree_path $subtask.spec_model)
 
-        # increment ticket iterations
         increment-iterations $subtask.ticket_id
 
-        # save raw stream
-        $raw_output | save -f $"/tmp/ralph-($subtask.id)-iter-($iter).jsonl"
+        $stream_result.raw_output | save -f $"/tmp/ralph-($subtask.id)-iter-($iter).jsonl"
 
-        # parse events (stream-json = JSONL, one JSON object per line)
-        let events = ($raw_output | lines | each { from json })
-
-        # extract action log and last messages
+        let events = $stream_result.events
         let new_actions = (extract-action-log $events)
         let last_msgs = (extract-last-messages $events 3)
 
-        # merge context (cap actions to last 50)
         let all_actions = ($context.actions | append $new_actions)
         let capped_actions = if ($all_actions | length) > 50 { $all_actions | last 50 } else { $all_actions }
         let updated_context = {
@@ -204,7 +249,6 @@ def work-subtask [subtask: record] {
         }
         save-context $subtask.id $updated_context
 
-        # extract structured output
         let result_events = ($events | where type == "result")
         let structured = if ($result_events | is-empty) {
             { done: false, reason: "no result event" }
@@ -214,7 +258,6 @@ def work-subtask [subtask: record] {
 
         print $"[ralph] subtask ($subtask.id) iter ($iter) — done=($structured.done) reason=($structured.reason)"
 
-        # run tests
         let cmd = (test-command)
         let test_result = (do { cd $subtask.worktree_path; ^sh -c $cmd } | complete)
         let tests_pass = ($test_result.exit_code == 0)
@@ -245,10 +288,8 @@ def work-subtask [subtask: record] {
     mark-subtask $subtask.id "done"
     print $"[ralph] subtask ($subtask.id) done"
 
-    # commit changes
     smart-commit $subtask.worktree_path $subtask.description
 
-    # check if all subtasks for this ticket are done
     let remaining = (db-query $"SELECT id FROM subtasks WHERE ticket_id = '(escape-sql $subtask.ticket_id)' AND status IN \('pending', 'in_progress'\)")
     if ($remaining | is-empty) {
         print $"[ralph] all subtasks done for ($subtask.ticket_id) — running reviews"
@@ -257,32 +298,25 @@ def work-subtask [subtask: record] {
 }
 
 def run-review [kind: string, model: string, diff: string, subtask_descs: string, worktree_path: string] {
-    let schema = '{"type":"object","properties":{"status":{"type":"string","enum":["pass","fail"]},"tasks":{"type":"array","items":{"type":"string"}}},"required":["status","tasks"]}'
+    let schema = '{"type":"object","properties":{"status":{"type":"string","enum":["pass","fail"]},"tasks":{"type":"array","items":{"type":"string"}}},"required":["status","tasks"],"additionalProperties":false}'
     let rules = (load-rules $worktree_path)
     let prompt_template = (open ([$PROMPTS $"($kind)-review.md"] | path join))
     let prompt = $"# Project Rules\n\n($rules)\n\n# Review\n\n" + ($prompt_template | str replace "{{SUBTASK_DESC}}" $subtask_descs | str replace "{{GIT_DIFF}}" $diff)
 
-    ^claude --print --output-format json --json-schema $schema --permission-mode bypassPermissions --model $model --no-session-persistence $prompt
-    | from json
-    | where type == "result"
-    | get 0.structured_output
+    invoke-codex-json $prompt $schema $worktree_path $model
 }
 
 def insert-followup-subtasks [ticket_id: string, tasks: list] {
-    # find the max sort_order of done subtasks for this ticket
     let done_rows = (db-query $"SELECT MAX\(sort_order\) as max_order FROM subtasks WHERE ticket_id = '(escape-sql $ticket_id)' AND status = 'done'")
     let insert_after = if ($done_rows | is-empty) or ($done_rows.0.max_order == null) { 0 } else { $done_rows.0.max_order }
 
-    # shift sort_order of all pending subtasks that come after
     let shift_amount = ($tasks | length)
     db-query $"UPDATE subtasks SET sort_order = sort_order + ($shift_amount) WHERE ticket_id = '(escape-sql $ticket_id)' AND status = 'pending' AND sort_order > ($insert_after)"
 
-    # get spec_model / quality_model from last done subtask
     let model_rows = (db-query $"SELECT spec_model, quality_model FROM subtasks WHERE ticket_id = '(escape-sql $ticket_id)' AND status = 'done' ORDER BY sort_order DESC LIMIT 1")
-    let spec_model = if ($model_rows | is-empty) { "claude-sonnet-4-6" } else { $model_rows.0.spec_model }
-    let quality_model = if ($model_rows | is-empty) { "claude-sonnet-4-6" } else { $model_rows.0.quality_model }
+    let spec_model = if ($model_rows | is-empty) { "gpt-5.4" } else { (codex-model $model_rows.0.spec_model) }
+    let quality_model = if ($model_rows | is-empty) { "gpt-5.4" } else { (codex-model $model_rows.0.quality_model) }
 
-    # insert new subtasks
     for idx in 0..<($tasks | length) {
         let desc = ($tasks | get $idx)
         let order = $insert_after + $idx + 1
@@ -298,26 +332,21 @@ def insert-followup-subtasks [ticket_id: string, tasks: list] {
 }
 
 def run-ticket-reviews [ticket_id: string] {
-    # get ticket info
     let ticket = (db-query $"SELECT worktree_path, base_branch FROM tickets WHERE jira_key = '(escape-sql $ticket_id)'" | get 0)
 
-    # commit any remaining uncommitted changes before review
     let stash_status = (do { cd $ticket.worktree_path; ^git status --short } | complete).stdout | str trim
     if ($stash_status | is-not-empty) {
         do { cd $ticket.worktree_path; ^git add -A; ^git commit -m "chore: stage remaining changes for review" --no-verify } | complete
     }
     let diff = (do { cd $ticket.worktree_path; ^git diff $"($ticket.base_branch)...HEAD" } | complete).stdout
 
-    # get all subtask descriptions
     let subtasks = (db-query $"SELECT description FROM subtasks WHERE ticket_id = '(escape-sql $ticket_id)' ORDER BY sort_order ASC")
     let subtask_descs = ($subtasks | get description | str join "\n- " | $"- ($in)")
 
-    # get models from last done subtask
     let model_rows = (db-query $"SELECT spec_model, quality_model FROM subtasks WHERE ticket_id = '(escape-sql $ticket_id)' AND status = 'done' ORDER BY sort_order DESC LIMIT 1")
-    let spec_model = if ($model_rows | is-empty) { "claude-sonnet-4-6" } else { $model_rows.0.spec_model }
-    let quality_model = if ($model_rows | is-empty) { "claude-sonnet-4-6" } else { $model_rows.0.quality_model }
+    let spec_model = if ($model_rows | is-empty) { "gpt-5.4" } else { (codex-model $model_rows.0.spec_model) }
+    let quality_model = if ($model_rows | is-empty) { "gpt-5.4" } else { (codex-model $model_rows.0.quality_model) }
 
-    # spec review
     print $"[ralph] running spec review for ($ticket_id)"
     let spec_result = (run-review "spec" $spec_model $diff $subtask_descs $ticket.worktree_path)
 
@@ -327,7 +356,6 @@ def run-ticket-reviews [ticket_id: string] {
         return
     }
 
-    # quality review
     print $"[ralph] running quality review for ($ticket_id)"
     let quality_result = (run-review "quality" $quality_model $diff $subtask_descs $ticket.worktree_path)
 
@@ -337,12 +365,9 @@ def run-ticket-reviews [ticket_id: string] {
         return
     }
 
-    # both passed
     mark-ticket $ticket_id "done"
     print $"[ralph] ticket ($ticket_id) done"
 }
-
-# --- main loop ---
 
 def main [] {
     print "[ralph] starting"
@@ -357,7 +382,6 @@ def main [] {
             continue
         }
 
-        # check lifetime cap before starting
         if $subtask.total_iterations >= $LIFETIME_CAP {
             print $"[ralph] lifetime cap reached for ($subtask.ticket_id), marking failed"
             mark-subtask $subtask.id "failed"
@@ -373,7 +397,6 @@ def main [] {
             work-subtask $subtask
         } catch { |e|
             print $"[ralph] error on subtask ($subtask.id): ($e.msg)"
-            # leave as in_progress — picked up next pass
         }
     }
 }

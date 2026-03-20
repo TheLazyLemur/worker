@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS tickets (
     summary TEXT NOT NULL,
     description TEXT,
     description_hash TEXT,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'not_ready', 'decomposed', 'needs_intervention', 'done')),  -- pending | not_ready | decomposed | needs_intervention | done
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'not_ready', 'decomposed', 'needs_intervention', 'done', 'pr_created', 'awaiting_merge')),  -- pending | not_ready | decomposed | done | pr_created | awaiting_merge | needs_intervention
     worktree_path TEXT,
     base_branch TEXT,
     manual INTEGER NOT NULL DEFAULT 0,
